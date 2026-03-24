@@ -531,7 +531,7 @@ video {
     justify-content: flex-end;
     align-items: center;
     gap: 6px;
-    padding-bottom: 20px; /* Space off the top of the sushi head */
+    padding-bottom: 5px; /* Sits closer to the sushi head */
     pointer-events: none;
     z-index: 100;
 }
