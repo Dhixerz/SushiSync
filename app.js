@@ -369,16 +369,24 @@ function gameLoop() {
     }
 
     if (moved || lastBroadcastMovedState) {
-        if (!state.throttleTimeout && state.conn && state.conn.open) {
+        if (!state.throttleTimeout) {
             state.throttleTimeout = setTimeout(() => {
-                const activeClasses = Array.from(UI.avatars.local.classList).filter(c => c.startsWith('moving-') || c === 'bouncing');
-                state.conn.send(JSON.stringify({
-                    type: 'cursor',
-                    x: state.localX,
-                    y: state.localY,
-                    classes: activeClasses
-                }));
+                // ALWAYS clear the lock first to avoid deadlock
                 state.throttleTimeout = null;
+
+                if (state.conn && state.conn.open) {
+                    try {
+                        const activeClasses = Array.from(UI.avatars.local.classList).filter(c => c.startsWith('moving-') || c === 'bouncing');
+                        state.conn.send(JSON.stringify({
+                            type: 'cursor',
+                            x: state.localX,
+                            y: state.localY,
+                            classes: activeClasses
+                        }));
+                    } catch (e) {
+                        console.warn("Failed to sync cursor", e);
+                    }
+                }
             }, 30);
         }
     }
