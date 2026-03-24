@@ -663,7 +663,13 @@ function handleDisconnection() {
     if (state.remoteStream) {
         UI.workspace.video.srcObject = null;
         UI.workspace.placeholder.classList.remove('hidden');
+        UI.workspace.video.classList.add('hidden');
     }
+    
+    // CRITICAL: Reset connection state so Host can accept a new or rejoining guest
+    state.conn = null;
+    state.mediaCall = null;
+    state.remoteStream = null;
 }
 
 // Start app
