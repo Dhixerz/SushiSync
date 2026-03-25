@@ -39,11 +39,14 @@ const state = {
     isHost: false,
     peer: null,
     conn: null, // Data channel
-    mediaCall: null, // Media connection
+    mediaCall: null, // Media connection (screen share)
+    audioCall: null, // Media connection (voice)
     myId: null,
     remoteId: null,
     localStream: null,
     remoteStream: null,
+    localAudioStream: null, // Microphone stream
+    isMicMuted: false,
     localX: 50, // Percentages
     localY: 50,
     throttleTimeout: null,
@@ -70,9 +73,11 @@ const UI = {
         btnCopy: document.getElementById('btn-copy'),
         btnShare: document.getElementById('btn-share'),
         btnLeave: document.getElementById('btn-leave'),
+        btnToggleMic: document.getElementById('btn-toggle-mic'),
         btnToggleChat: document.getElementById('btn-toggle-chat'),
         indicator: document.getElementById('connection-indicator'),
         video: document.getElementById('media-video'),
+        remoteAudio: document.getElementById('remote-audio'),
         placeholder: document.getElementById('media-placeholder'),
         placeholderText: document.getElementById('placeholder-text')
     },
@@ -111,6 +116,7 @@ function bindEvents() {
     UI.setup.btnJoin.addEventListener('click', () => joinRoom(UI.setup.inputRoom.value.trim()));
     UI.workspace.btnCopy.addEventListener('click', copyInviteLink);
     UI.workspace.btnShare.addEventListener('click', toggleScreenShare);
+    UI.workspace.btnToggleMic.addEventListener('click', toggleMicrophone);
     
     UI.workspace.btnLeave.addEventListener('click', () => {
         UI.modal.overlay.classList.remove('hidden');
@@ -304,6 +310,11 @@ function setupDataConnection(conn) {
         // If Host already has a stream, call the guest now
         if (state.isHost && state.localStream) {
             makeMediaCall(conn.peer, state.localStream);
+        }
+
+        // If we already have a mic stream, send audio call to the new peer
+        if (state.localAudioStream) {
+            makeAudioCall(conn.peer, state.localAudioStream);
         }
     };
 
@@ -561,15 +572,28 @@ async function toggleScreenShare() {
 }
 
 function makeMediaCall(remotePeerId, stream) {
-    state.mediaCall = state.peer.call(remotePeerId, stream);
+    state.mediaCall = state.peer.call(remotePeerId, stream, { metadata: { type: 'screen' } });
     handleMediaCallEvents(state.mediaCall);
 }
 
+function makeAudioCall(remotePeerId, audioStream) {
+    state.audioCall = state.peer.call(remotePeerId, audioStream, { metadata: { type: 'audio' } });
+    handleAudioCallEvents(state.audioCall);
+}
+
 function handleIncomingCall(call) {
-    state.mediaCall = call;
-    // We are receiving the video (usually the guest)
-    call.answer(null); // Answer without sending stream
-    handleMediaCallEvents(call);
+    const callType = call.metadata && call.metadata.type;
+
+    if (callType === 'audio') {
+        // Incoming voice call — answer with our own mic stream if we have one
+        call.answer(state.localAudioStream || null);
+        handleAudioCallEvents(call);
+    } else {
+        // Incoming screen share call
+        state.mediaCall = call;
+        call.answer(null); // Answer without sending stream
+        handleMediaCallEvents(call);
+    }
 }
 
 function handleMediaCallEvents(call) {
@@ -587,6 +611,87 @@ function handleMediaCallEvents(call) {
         UI.workspace.video.classList.add('hidden');
     });
 }
+
+function handleAudioCallEvents(call) {
+    call.on('stream', (remoteAudioStream) => {
+        UI.workspace.remoteAudio.srcObject = remoteAudioStream;
+    });
+
+    call.on('close', () => {
+        UI.workspace.remoteAudio.srcObject = null;
+    });
+}
+
+// --- Voice / Microphone ---
+async function toggleMicrophone() {
+    // If mic is already acquired, toggle mute state
+    if (state.localAudioStream) {
+        const audioTrack = state.localAudioStream.getAudioTracks()[0];
+        if (audioTrack) {
+            state.isMicMuted = !state.isMicMuted;
+            audioTrack.enabled = !state.isMicMuted;
+
+            if (state.isMicMuted) {
+                UI.workspace.btnToggleMic.textContent = '🔇';
+                UI.workspace.btnToggleMic.classList.remove('mic-active');
+                UI.workspace.btnToggleMic.classList.add('mic-muted');
+                UI.workspace.btnToggleMic.title = 'Unmute Microphone';
+            } else {
+                UI.workspace.btnToggleMic.textContent = '🎤';
+                UI.workspace.btnToggleMic.classList.remove('mic-muted');
+                UI.workspace.btnToggleMic.classList.add('mic-active');
+                UI.workspace.btnToggleMic.title = 'Mute Microphone';
+            }
+        }
+        return;
+    }
+
+    // First time — request mic access
+    try {
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+
+        state.localAudioStream = audioStream;
+        state.isMicMuted = false;
+
+        UI.workspace.btnToggleMic.textContent = '🎤';
+        UI.workspace.btnToggleMic.classList.add('mic-active');
+        UI.workspace.btnToggleMic.title = 'Mute Microphone';
+
+        addSystemMessage('Microphone enabled.');
+
+        // If we have a connected peer, call them with our audio
+        if (state.conn && state.conn.open) {
+            makeAudioCall(state.conn.peer, audioStream);
+        }
+
+    } catch (err) {
+        console.error('Microphone access error:', err);
+        addSystemMessage('Failed to access microphone. Permission denied?');
+    }
+}
+
+function cleanupAudio() {
+    if (state.localAudioStream) {
+        state.localAudioStream.getTracks().forEach(track => track.stop());
+        state.localAudioStream = null;
+    }
+    if (state.audioCall) {
+        state.audioCall.close();
+        state.audioCall = null;
+    }
+    UI.workspace.remoteAudio.srcObject = null;
+    state.isMicMuted = false;
+    UI.workspace.btnToggleMic.textContent = '🎤';
+    UI.workspace.btnToggleMic.classList.remove('mic-active', 'mic-muted');
+    UI.workspace.btnToggleMic.title = 'Toggle Microphone';
+}
+
 // --- UI Helpers ---
 
 function setStatus(msg) {
@@ -612,6 +717,9 @@ function leaveRoom() {
         state.mediaCall.close();
         state.mediaCall = null;
     }
+
+    // 2b. Clean up audio
+    cleanupAudio();
 
     // 3. Clean up data connection
     if (state.conn) {
@@ -674,6 +782,13 @@ function handleDisconnection() {
         UI.workspace.video.classList.add('hidden');
     }
     
+    // Clean up audio on disconnect
+    if (state.audioCall) {
+        state.audioCall.close();
+        state.audioCall = null;
+    }
+    UI.workspace.remoteAudio.srcObject = null;
+
     // CRITICAL: Reset connection state so Host can accept a new or rejoining guest
     state.conn = null;
     state.mediaCall = null;
