@@ -1,4 +1,24 @@
-// Configuration & State
+// ==========================================
+// Configuration & Constants
+// ==========================================
+
+const PEER_CONFIG = {
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            // Optional: Add TURN servers for better connectivity behind strict NATs
+            // Get free credentials at https://www.metered.ca/stun-turn
+            // { urls: 'turn:your-turn-server:443', username: 'user', credential: 'pass' },
+            // { urls: 'turn:your-turn-server:443?transport=tcp', username: 'user', credential: 'pass' },
+        ]
+    },
+    debug: 1
+};
+
 const AVATARS = {
     salmon: `<svg width="80" height="80" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
                 <rect x="15" y="55" width="70" height="25" rx="12" fill="#ffffff" stroke="#333" stroke-width="3" />
@@ -35,28 +55,31 @@ const AVATARS = {
             </svg>`
 };
 
+// ==========================================
+// State (Multi-User Mesh)
+// ==========================================
+
 const state = {
     isHost: false,
     peer: null,
-    conn: null, // Data channel
-    mediaCall: null, // Media connection (screen share)
-    audioCall: null, // Media connection (voice)
+    peers: new Map(), // peerId → { conn, mediaCallOut, mediaCallIn, audioCallOut, audioCallIn, avatar, x, y, avatarEl }
     myId: null,
-    remoteId: null,
-    localStream: null,
-    remoteStream: null,
-    localAudioStream: null, // Microphone stream
+    hostId: null,
+    localStream: null,       // Screen share stream
+    localAudioStream: null,  // Microphone stream
     isMicMuted: false,
-    localX: 50, // Percentages
+    localX: 50,
     localY: 50,
     throttleTimeout: null,
-    myAvatar: 'salmon',
-    remoteAvatar: 'tamago'
+    myAvatar: 'salmon'
 };
 
 const keyState = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
 
+// ==========================================
 // UI Elements Map
+// ==========================================
+
 const UI = {
     views: {
         setup: document.getElementById('setup-view'),
@@ -77,7 +100,6 @@ const UI = {
         btnToggleChat: document.getElementById('btn-toggle-chat'),
         indicator: document.getElementById('connection-indicator'),
         video: document.getElementById('media-video'),
-        remoteAudio: document.getElementById('remote-audio'),
         placeholder: document.getElementById('media-placeholder'),
         placeholderText: document.getElementById('placeholder-text')
     },
@@ -90,8 +112,7 @@ const UI = {
         btnSend: document.getElementById('btn-send')
     },
     avatars: {
-        local: document.getElementById('local-avatar'),
-        remote: document.getElementById('remote-avatar')
+        local: document.getElementById('local-avatar')
     },
     modal: {
         overlay: document.getElementById('confirm-modal'),
@@ -100,13 +121,13 @@ const UI = {
     }
 };
 
-// --- Initialization ---
-function init() {
-    UI.avatars.local.style.left = `50vw`;
-    UI.avatars.local.style.top = `50vh`;
-    UI.avatars.remote.style.left = `50vw`;
-    UI.avatars.remote.style.top = `50vh`;
+// ==========================================
+// Initialization
+// ==========================================
 
+function init() {
+    UI.avatars.local.style.left = '50vw';
+    UI.avatars.local.style.top = '50vh';
     bindEvents();
     checkForUrlRoom();
 }
@@ -117,7 +138,7 @@ function bindEvents() {
     UI.workspace.btnCopy.addEventListener('click', copyInviteLink);
     UI.workspace.btnShare.addEventListener('click', toggleScreenShare);
     UI.workspace.btnToggleMic.addEventListener('click', toggleMicrophone);
-    
+
     UI.workspace.btnLeave.addEventListener('click', () => {
         UI.modal.overlay.classList.remove('hidden');
     });
@@ -130,20 +151,19 @@ function bindEvents() {
     });
 
     UI.workspace.btnToggleChat.addEventListener('click', () => UI.chat.sidebar.classList.toggle('hidden-sidebar'));
-    
+
     // Chat events
     UI.chat.btnClose.addEventListener('click', () => UI.chat.sidebar.classList.add('hidden-sidebar'));
     UI.chat.btnSend.addEventListener('click', sendChatMessage);
     UI.chat.input.addEventListener('keydown', (e) => {
-        // Send on Enter (but add newline on Shift + Enter)
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             sendChatMessage();
         }
     });
-    
+
     // Auto-expand textarea
-    UI.chat.input.addEventListener('input', function() {
+    UI.chat.input.addEventListener('input', function () {
         this.style.height = 'auto';
         this.style.height = this.scrollHeight + 'px';
     });
@@ -154,12 +174,15 @@ function bindEvents() {
 
     // Make chat draggable
     makeDraggable(UI.chat.sidebar, UI.chat.header);
-    
+
     // Start game loop
     requestAnimationFrame(gameLoop);
 }
 
-// --- Draggable Utility ---
+// ==========================================
+// Draggable Utility
+// ==========================================
+
 function makeDraggable(element, handle) {
     let isDragging = false;
     let offsetX, offsetY;
@@ -167,16 +190,14 @@ function makeDraggable(element, handle) {
     handle.style.cursor = 'grab';
 
     handle.addEventListener('mousedown', (e) => {
-        if (e.target.tagName === 'BUTTON') return; // Ignore close button clicks
-        
+        if (e.target.tagName === 'BUTTON') return;
         isDragging = true;
         handle.style.cursor = 'grabbing';
-        
+
         const rect = element.getBoundingClientRect();
         offsetX = e.clientX - rect.left;
         offsetY = e.clientY - rect.top;
-        
-        // Remove bottom/right positioning to rely purely on top/left
+
         element.style.bottom = 'auto';
         element.style.right = 'auto';
         element.style.left = `${rect.left}px`;
@@ -185,14 +206,10 @@ function makeDraggable(element, handle) {
 
     document.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
-        
         let newX = e.clientX - offsetX;
         let newY = e.clientY - offsetY;
-        
-        // Bound to window
         newX = Math.max(0, Math.min(newX, window.innerWidth - element.offsetWidth));
         newY = Math.max(0, Math.min(newY, window.innerHeight - element.offsetHeight));
-        
         element.style.left = `${newX}px`;
         element.style.top = `${newY}px`;
     });
@@ -208,13 +225,13 @@ function checkForUrlRoom() {
     const peerId = urlParams.get('room');
     if (peerId) {
         UI.setup.inputRoom.value = peerId;
-        // Optionally auto-join:
-        // joinRoom(peerId);
         setStatus("Found room ID from URL. Click Join Room to connect.");
     }
 }
 
-// --- PeerJS Logic ---
+// ==========================================
+// PeerJS Logic
+// ==========================================
 
 function getSelectedAvatar() {
     const checked = document.querySelector('input[name="avatar"]:checked');
@@ -225,33 +242,24 @@ function createRoom() {
     state.isHost = true;
     state.myAvatar = getSelectedAvatar();
     UI.avatars.local.querySelector('.sushi-inner').innerHTML = AVATARS[state.myAvatar];
-
     setStatus("Connecting to signaling server...");
-    
-    state.peer = new Peer({
-        // Uses default free public PeerJS server
-        debug: 2
-    });
+
+    state.peer = new Peer(PEER_CONFIG);
 
     state.peer.on('open', (id) => {
         state.myId = id;
+        state.hostId = id;
         transitionToWorkspace();
         UI.workspace.roomId.textContent = id;
-        addSystemMessage(`Room created! Share this ID or the invite link to connect.`);
-        UI.workspace.btnShare.classList.remove('hidden'); // Host can share
+        addSystemMessage('Room created! Share this ID or the invite link to connect.');
     });
 
+    // Accept ALL incoming connections (multi-user)
     state.peer.on('connection', (conn) => {
-        if (state.conn) {
-            conn.close(); // Only allow one guest for a 1-to-1 session
-            return;
-        }
-        setupDataConnection(conn);
+        setupDataConnection(conn, true);
     });
 
-    // When the guest calls us to request the stream (if available) or connect media
     state.peer.on('call', handleIncomingCall);
-
     handlePeerErrors();
 }
 
@@ -260,61 +268,92 @@ function joinRoom(peerId) {
         setStatus("Please enter a Room ID or link.");
         return;
     }
-    
+
     // Extract ID if a full link was pasted
     if (peerId.includes('?room=')) {
-        peerId = new URL(peerId).searchParams.get('room');
+        try { peerId = new URL(peerId).searchParams.get('room'); } catch (e) { /* use as-is */ }
     }
 
     state.isHost = false;
-    state.remoteId = peerId;
+    state.hostId = peerId;
     state.myAvatar = getSelectedAvatar();
     UI.avatars.local.querySelector('.sushi-inner').innerHTML = AVATARS[state.myAvatar];
-    
     setStatus("Connecting to signaling server...");
-    
-    state.peer = new Peer({ debug: 2 });
+
+    state.peer = new Peer(PEER_CONFIG);
 
     state.peer.on('open', (id) => {
         state.myId = id;
         setStatus("Connecting to host...");
-        const conn = state.peer.connect(peerId);
-        setupDataConnection(conn);
+        const conn = state.peer.connect(peerId, { reliable: true });
+        setupDataConnection(conn, false);
         transitionToWorkspace();
         UI.workspace.roomId.textContent = peerId;
+    });
+
+    // Listen for incoming connections from OTHER peers (mesh)
+    state.peer.on('connection', (conn) => {
+        setupDataConnection(conn, true);
     });
 
     state.peer.on('call', handleIncomingCall);
     handlePeerErrors();
 }
 
-function setupDataConnection(conn) {
-    state.conn = conn;
+// ==========================================
+// Data Connection Management (Multi-Peer)
+// ==========================================
+
+function setupDataConnection(conn, isIncoming) {
+    const peerId = conn.peer;
+
+    // If we already have a connection to this peer, skip
+    if (state.peers.has(peerId)) {
+        console.warn(`Already connected to ${peerId}, ignoring duplicate`);
+        return;
+    }
+
+    // Create peer data entry
+    const peerData = {
+        conn: conn,
+        mediaCallOut: null,
+        mediaCallIn: null,
+        audioCallOut: null,
+        audioCallIn: null,
+        avatar: 'tamago',
+        x: 50,
+        y: 50,
+        avatarEl: null
+    };
+    state.peers.set(peerId, peerData);
 
     const onOpen = () => {
-        setStatus("");
-        UI.workspace.indicator.classList.replace('offline', 'online');
-        UI.workspace.indicator.title = "Online";
-        
-        UI.chat.input.disabled = false;
-        UI.chat.btnSend.disabled = false;
-        
-        addSystemMessage(state.isHost ? "Guest joined the room!" : "Connected to the room!");
-        
-        // Tell remote peer what avatar to display for us
-        state.conn.send(JSON.stringify({ type: 'init', avatar: state.myAvatar }));
+        updateConnectionStatus();
 
-        // Show remote avatar piece
-        UI.avatars.remote.classList.remove('hidden');
+        // Send our identity
+        conn.send(JSON.stringify({ type: 'init', avatar: state.myAvatar }));
 
-        // If Host already has a stream, call the guest now
-        if (state.isHost && state.localStream) {
-            makeMediaCall(conn.peer, state.localStream);
+        // Create remote avatar for this peer
+        peerData.avatarEl = createRemoteAvatar(peerId);
+
+        addSystemMessage(isIncoming ? 'A new user joined!' : 'Connected to a peer!');
+
+        // HOST: send the new peer a list of all OTHER connected peers for mesh
+        if (state.isHost && isIncoming) {
+            const otherPeerIds = [...state.peers.keys()].filter(id => id !== peerId);
+            if (otherPeerIds.length > 0) {
+                conn.send(JSON.stringify({ type: 'peer-list', peers: otherPeerIds }));
+            }
         }
 
-        // If we already have a mic stream, send audio call to the new peer
+        // If we're sharing screen, call this new peer
+        if (state.localStream) {
+            makeMediaCall(peerId, state.localStream);
+        }
+
+        // If we have mic enabled, call this new peer with audio
         if (state.localAudioStream) {
-            makeAudioCall(conn.peer, state.localAudioStream);
+            makeAudioCall(peerId, state.localAudioStream);
         }
     };
 
@@ -324,27 +363,106 @@ function setupDataConnection(conn) {
         conn.on('open', onOpen);
     }
 
-    conn.on('data', handleIncomingData);
+    conn.on('data', (data) => handleIncomingData(data, peerId));
 
     conn.on('close', () => {
-        handleDisconnection();
+        removePeer(peerId);
+    });
+
+    conn.on('error', (err) => {
+        console.error(`Data connection error with ${peerId}:`, err);
+        removePeer(peerId);
     });
 }
 
-function handlePeerErrors() {
-    state.peer.on('error', (err) => {
-        console.error(err);
-        setStatus("Error: " + err.message);
-        if (err.type === 'peer-unavailable') {
-            addSystemMessage("Connection failed. Host might be disconnected or room ID is invalid.");
-            handleDisconnection();
+// ==========================================
+// Dynamic Avatar Management
+// ==========================================
+
+function createRemoteAvatar(peerId) {
+    // Remove existing if any (shouldn't happen, but safety)
+    removeRemoteAvatar(peerId);
+
+    const avatarEl = document.createElement('div');
+    avatarEl.id = `avatar-${peerId}`;
+    avatarEl.className = 'avatar remote';
+    avatarEl.title = 'Peer';
+    avatarEl.style.left = '50vw';
+    avatarEl.style.top = '50vh';
+    avatarEl.innerHTML = `
+        <div class="legs">
+            <div class="leg left"></div>
+            <div class="leg right"></div>
+        </div>
+        <div class="sushi-inner"></div>
+    `;
+
+    document.body.appendChild(avatarEl);
+    return avatarEl;
+}
+
+function removeRemoteAvatar(peerId) {
+    const el = document.getElementById(`avatar-${peerId}`);
+    if (el) el.remove();
+}
+
+// ==========================================
+// Data Channel Messages
+// ==========================================
+
+function handleIncomingData(data, fromPeerId) {
+    try {
+        const payload = JSON.parse(data);
+        const peerData = state.peers.get(fromPeerId);
+
+        if (payload.type === 'init') {
+            if (peerData) {
+                peerData.avatar = payload.avatar || 'tamago';
+                if (peerData.avatarEl) {
+                    peerData.avatarEl.querySelector('.sushi-inner').innerHTML = AVATARS[peerData.avatar];
+                }
+            }
+
+        } else if (payload.type === 'peer-list') {
+            // Received from host — connect to each listed peer for mesh
+            const peerIds = payload.peers || [];
+            peerIds.forEach(pid => {
+                if (!state.peers.has(pid) && pid !== state.myId) {
+                    const conn = state.peer.connect(pid, { reliable: true });
+                    setupDataConnection(conn, false);
+                }
+            });
+
+        } else if (payload.type === 'chat') {
+            addMessage(payload.text, 'remote');
+            if (peerData && peerData.avatarEl) {
+                showChatBubble(peerData.avatarEl, payload.text);
+            }
+
+        } else if (payload.type === 'cursor') {
+            updateRemoteCursor(fromPeerId, payload.x, payload.y, payload.classes);
+        }
+    } catch (e) {
+        console.warn("Received malformed data:", data);
+    }
+}
+
+function broadcastData(payload) {
+    const msg = JSON.stringify(payload);
+    state.peers.forEach((peerData, peerId) => {
+        if (peerData.conn && peerData.conn.open) {
+            try {
+                peerData.conn.send(msg);
+            } catch (e) {
+                console.warn(`Failed to send to ${peerId}:`, e);
+            }
         }
     });
 }
 
-// --- Data Channel Multiplexing ---
-
-// --- Cursor Sync & Avatars ---
+// ==========================================
+// Cursor Sync & Avatars
+// ==========================================
 
 function handleKeyDown(e) {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
@@ -364,7 +482,7 @@ let lastBroadcastMovedState = false;
 
 function gameLoop() {
     let moved = false;
-    const step = 0.5; // Smooth 60fps movement
+    const step = 0.5;
 
     if (keyState.ArrowUp) { state.localY = Math.max(0, state.localY - step); moved = true; UI.avatars.local.classList.add('moving-up'); } else { UI.avatars.local.classList.remove('moving-up'); }
     if (keyState.ArrowDown) { state.localY = Math.min(100, state.localY + step); moved = true; UI.avatars.local.classList.add('moving-down'); } else { UI.avatars.local.classList.remove('moving-down'); }
@@ -382,22 +500,14 @@ function gameLoop() {
     if (moved || lastBroadcastMovedState) {
         if (!state.throttleTimeout) {
             state.throttleTimeout = setTimeout(() => {
-                // ALWAYS clear the lock first to avoid deadlock
                 state.throttleTimeout = null;
-
-                if (state.conn && state.conn.open) {
-                    try {
-                        const activeClasses = Array.from(UI.avatars.local.classList).filter(c => c.startsWith('moving-') || c === 'bouncing');
-                        state.conn.send(JSON.stringify({
-                            type: 'cursor',
-                            x: state.localX,
-                            y: state.localY,
-                            classes: activeClasses
-                        }));
-                    } catch (e) {
-                        console.warn("Failed to sync cursor", e);
-                    }
-                }
+                const activeClasses = Array.from(UI.avatars.local.classList).filter(c => c.startsWith('moving-') || c === 'bouncing');
+                broadcastData({
+                    type: 'cursor',
+                    x: state.localX,
+                    y: state.localY,
+                    classes: activeClasses
+                });
             }, 30);
         }
     }
@@ -406,61 +516,49 @@ function gameLoop() {
     requestAnimationFrame(gameLoop);
 }
 
-function updateRemoteCursor(pcX, pcY, classes = []) {
-    UI.avatars.remote.style.left = `${pcX}vw`;
-    UI.avatars.remote.style.top = `${pcY}vh`;
-    
+function updateRemoteCursor(peerId, pcX, pcY, classes = []) {
+    const peerData = state.peers.get(peerId);
+    if (!peerData || !peerData.avatarEl) return;
+
+    peerData.x = pcX;
+    peerData.y = pcY;
+    peerData.avatarEl.style.left = `${pcX}vw`;
+    peerData.avatarEl.style.top = `${pcY}vh`;
+
     // Clear and re-apply classes
-    UI.avatars.remote.className = 'avatar remote';
+    peerData.avatarEl.className = 'avatar remote';
     if (classes && classes.length > 0) {
-        UI.avatars.remote.classList.add(...classes);
+        peerData.avatarEl.classList.add(...classes);
     }
 }
 
-function handleIncomingData(data) {
-    try {
-        const payload = JSON.parse(data);
-        if (payload.type === 'init') {
-            state.remoteAvatar = payload.avatar || 'tamago';
-            UI.avatars.remote.querySelector('.sushi-inner').innerHTML = AVATARS[state.remoteAvatar];
-        } else if (payload.type === 'chat') {
-            addMessage(payload.text, 'remote');
-            showChatBubble(UI.avatars.remote, payload.text);
-        } else if (payload.type === 'cursor') {
-            updateRemoteCursor(payload.x, payload.y, payload.classes);
-        }
-    } catch (e) {
-        console.warn("Received malformed data:", data);
-    }
-}
+// ==========================================
+// Chat Logic
+// ==========================================
 
-// --- Chat Logic ---
 function showChatBubble(avatarElement, text) {
     let container = avatarElement.querySelector('.chat-bubble-container');
     if (!container) {
         container = document.createElement('div');
         container.className = 'chat-bubble-container';
-        // Prepend it so it sits behind or properly positioned above the DOM layers
         avatarElement.insertBefore(container, avatarElement.firstChild);
     }
 
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
     bubble.textContent = text;
-    
-    // Limits: Max 3 bubbles at a time so screen doesn't get flooded
+
     if (container.children.length >= 3) {
-        container.removeChild(container.firstChild); // remove oldest bubble
+        container.removeChild(container.firstChild);
     }
 
     container.appendChild(bubble);
 
-    // Natural disappearing after 5 seconds
     setTimeout(() => {
         bubble.classList.add('fading');
         setTimeout(() => {
             if (bubble.parentElement) bubble.remove();
-        }, 500); // Wait for CSS opacity finish
+        }, 500);
     }, 5000);
 }
 
@@ -468,26 +566,24 @@ function sendChatMessage() {
     const text = UI.chat.input.value.trim();
     if (!text) return;
 
-    if (!state.conn) {
+    if (state.peers.size === 0) {
         addSystemMessage("Waiting for someone to join before you can chat!");
         return;
     }
 
-    if (!state.conn.open) {
+    let anyOpen = false;
+    state.peers.forEach(pd => { if (pd.conn && pd.conn.open) anyOpen = true; });
+    if (!anyOpen) {
         addSystemMessage("Connecting... please wait a moment.");
         return;
     }
 
     try {
-        // Render locally
         addMessage(text, 'local');
         showChatBubble(UI.avatars.local, text);
-        
-        // Send over data channel
-        state.conn.send(JSON.stringify({ type: 'chat', text }));
-        
+        broadcastData({ type: 'chat', text });
         UI.chat.input.value = '';
-        UI.chat.input.style.height = 'auto'; // Reset size after sending
+        UI.chat.input.style.height = 'auto';
     } catch (e) {
         console.error("Failed to send message:", e);
         addSystemMessage("Failed to send message: Connection might have dropped.");
@@ -514,56 +610,63 @@ function scrollToBottom(element) {
     element.scrollTop = element.scrollHeight;
 }
 
-// --- Media & Screen Share ---
+// ==========================================
+// Screen Share
+// ==========================================
+
 async function toggleScreenShare() {
     if (state.localStream) {
         // Stop sharing
         state.localStream.getTracks().forEach(track => track.stop());
         state.localStream = null;
-        if (state.mediaCall) {
-            state.mediaCall.close();
-            state.mediaCall = null;
-        }
+
+        // Close all outgoing media calls
+        state.peers.forEach((peerData) => {
+            if (peerData.mediaCallOut) {
+                peerData.mediaCallOut.close();
+                peerData.mediaCallOut = null;
+            }
+        });
+
         UI.workspace.video.srcObject = null;
+        UI.workspace.video.muted = false;
         UI.workspace.video.classList.add('hidden');
         UI.workspace.placeholder.classList.remove('hidden');
         UI.workspace.btnShare.textContent = "Share Screen";
         UI.workspace.btnShare.classList.remove('secondary-btn');
         UI.workspace.btnShare.classList.add('primary-btn');
-        // Notify guest maybe via data channel if needed, else stream track ends
-        if (state.conn && state.conn.open) {
-             state.conn.send(JSON.stringify({type:'chat', text:'Screen sharing stopped.'}));
-             addSystemMessage("Screen sharing stopped.");
-        }
+
+        broadcastData({ type: 'chat', text: 'Screen sharing stopped.' });
+        addSystemMessage("Screen sharing stopped.");
         return;
     }
 
     try {
         const stream = await navigator.mediaDevices.getDisplayMedia({
-            video: {
-                cursor: "always",
-                displaySurface: "monitor"
-            },
+            video: { cursor: "always", displaySurface: "monitor" },
             audio: true
         });
 
         state.localStream = stream;
         UI.workspace.video.srcObject = stream;
+        UI.workspace.video.muted = true; // MUTE local playback to prevent audio doubling
         UI.workspace.placeholder.classList.add('hidden');
         UI.workspace.video.classList.remove('hidden');
-        
+
         UI.workspace.btnShare.textContent = "Stop Sharing";
         UI.workspace.btnShare.classList.remove('primary-btn');
         UI.workspace.btnShare.classList.add('secondary-btn');
 
         stream.getVideoTracks()[0].onended = () => {
-             toggleScreenShare(); // Handle external stop via browser UI
+            toggleScreenShare(); // Handle external stop via browser UI
         };
 
-        // If we have a connected peer, call them now
-        if (state.conn && state.conn.open) {
-            makeMediaCall(state.conn.peer, stream);
-        }
+        // Call ALL connected peers with the screen share
+        state.peers.forEach((peerData, peerId) => {
+            if (peerData.conn && peerData.conn.open) {
+                makeMediaCall(peerId, stream);
+            }
+        });
 
     } catch (err) {
         console.error("Error accessing display media.", err);
@@ -571,60 +674,121 @@ async function toggleScreenShare() {
     }
 }
 
+// ==========================================
+// Media Calls (Screen Share)
+// ==========================================
+
 function makeMediaCall(remotePeerId, stream) {
-    state.mediaCall = state.peer.call(remotePeerId, stream, { metadata: { type: 'screen' } });
-    handleMediaCallEvents(state.mediaCall);
+    const peerData = state.peers.get(remotePeerId);
+    if (!peerData) return;
+
+    const call = state.peer.call(remotePeerId, stream, { metadata: { type: 'screen' } });
+    peerData.mediaCallOut = call;
+
+    call.on('close', () => {
+        if (peerData.mediaCallOut === call) peerData.mediaCallOut = null;
+    });
 }
 
+// ==========================================
+// Audio Calls (Microphone Voice)
+// ==========================================
+
 function makeAudioCall(remotePeerId, audioStream) {
-    state.audioCall = state.peer.call(remotePeerId, audioStream, { metadata: { type: 'audio' } });
-    handleAudioCallEvents(state.audioCall);
+    const peerData = state.peers.get(remotePeerId);
+    if (!peerData) return;
+
+    // Close any existing outgoing audio call to this peer
+    if (peerData.audioCallOut) {
+        peerData.audioCallOut.close();
+        peerData.audioCallOut = null;
+    }
+
+    const call = state.peer.call(remotePeerId, audioStream, { metadata: { type: 'audio' } });
+    peerData.audioCallOut = call;
+
+    call.on('close', () => {
+        if (peerData.audioCallOut === call) peerData.audioCallOut = null;
+    });
 }
+
+// ==========================================
+// Incoming Call Handler (Routes Screen vs Audio)
+// ==========================================
 
 function handleIncomingCall(call) {
     const callType = call.metadata && call.metadata.type;
+    const remotePeerId = call.peer;
+    const peerData = state.peers.get(remotePeerId);
 
     if (callType === 'audio') {
-        // Incoming voice call — answer with our own mic stream if we have one
-        call.answer(state.localAudioStream || null);
-        handleAudioCallEvents(call);
+        // Incoming voice — just receive (we send our audio via our own outgoing calls)
+        call.answer(null);
+        if (peerData) peerData.audioCallIn = call;
+
+        call.on('stream', (remoteAudioStream) => {
+            playRemoteAudio(remotePeerId, remoteAudioStream);
+        });
+
+        call.on('close', () => {
+            stopRemoteAudio(remotePeerId);
+            if (peerData && peerData.audioCallIn === call) peerData.audioCallIn = null;
+        });
+
     } else {
-        // Incoming screen share call
-        state.mediaCall = call;
-        call.answer(null); // Answer without sending stream
-        handleMediaCallEvents(call);
+        // Screen share — receive and display
+        call.answer(null);
+        if (peerData) peerData.mediaCallIn = call;
+
+        call.on('stream', (remoteStream) => {
+            UI.workspace.video.srcObject = remoteStream;
+            UI.workspace.video.muted = false; // We want to hear remote's screen audio
+            UI.workspace.placeholder.classList.add('hidden');
+            UI.workspace.video.classList.remove('hidden');
+        });
+
+        call.on('close', () => {
+            if (peerData && peerData.mediaCallIn === call) peerData.mediaCallIn = null;
+
+            // Only clear video if no other incoming screen shares
+            let hasOtherScreenShare = false;
+            state.peers.forEach((pd) => {
+                if (pd.mediaCallIn) hasOtherScreenShare = true;
+            });
+            if (!hasOtherScreenShare && !state.localStream) {
+                UI.workspace.video.srcObject = null;
+                UI.workspace.placeholder.classList.remove('hidden');
+                UI.workspace.video.classList.add('hidden');
+            }
+        });
     }
 }
 
-function handleMediaCallEvents(call) {
-    call.on('stream', (remoteStream) => {
-        state.remoteStream = remoteStream;
-        UI.workspace.video.srcObject = remoteStream;
-        UI.workspace.placeholder.classList.add('hidden');
-        UI.workspace.video.classList.remove('hidden');
-    });
+// ==========================================
+// Voice / Microphone
+// ==========================================
 
-    call.on('close', () => {
-        state.remoteStream = null;
-        UI.workspace.video.srcObject = null;
-        UI.workspace.placeholder.classList.remove('hidden');
-        UI.workspace.video.classList.add('hidden');
-    });
+function playRemoteAudio(peerId, stream) {
+    let audioEl = document.getElementById(`audio-${peerId}`);
+    if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.id = `audio-${peerId}`;
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+    }
+    audioEl.srcObject = stream;
 }
 
-function handleAudioCallEvents(call) {
-    call.on('stream', (remoteAudioStream) => {
-        UI.workspace.remoteAudio.srcObject = remoteAudioStream;
-    });
-
-    call.on('close', () => {
-        UI.workspace.remoteAudio.srcObject = null;
-    });
+function stopRemoteAudio(peerId) {
+    const audioEl = document.getElementById(`audio-${peerId}`);
+    if (audioEl) {
+        audioEl.srcObject = null;
+        audioEl.remove();
+    }
 }
 
-// --- Voice / Microphone ---
 async function toggleMicrophone() {
-    // If mic is already acquired, toggle mute state
+    // If mic is already acquired, toggle mute/unmute
     if (state.localAudioStream) {
         const audioTrack = state.localAudioStream.getAudioTracks()[0];
         if (audioTrack) {
@@ -646,7 +810,7 @@ async function toggleMicrophone() {
         return;
     }
 
-    // First time — request mic access
+    // First time — request mic access with echo cancellation
     try {
         const audioStream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -665,10 +829,12 @@ async function toggleMicrophone() {
 
         addSystemMessage('Microphone enabled.');
 
-        // If we have a connected peer, call them with our audio
-        if (state.conn && state.conn.open) {
-            makeAudioCall(state.conn.peer, audioStream);
-        }
+        // Call ALL connected peers with our audio
+        state.peers.forEach((peerData, peerId) => {
+            if (peerData.conn && peerData.conn.open) {
+                makeAudioCall(peerId, audioStream);
+            }
+        });
 
     } catch (err) {
         console.error('Microphone access error:', err);
@@ -676,23 +842,61 @@ async function toggleMicrophone() {
     }
 }
 
-function cleanupAudio() {
-    if (state.localAudioStream) {
-        state.localAudioStream.getTracks().forEach(track => track.stop());
-        state.localAudioStream = null;
+// ==========================================
+// Peer Cleanup
+// ==========================================
+
+function removePeer(peerId) {
+    const peerData = state.peers.get(peerId);
+    if (!peerData) return;
+
+    // Close all calls
+    if (peerData.mediaCallOut) { try { peerData.mediaCallOut.close(); } catch (e) {} }
+    if (peerData.mediaCallIn) { try { peerData.mediaCallIn.close(); } catch (e) {} }
+    if (peerData.audioCallOut) { try { peerData.audioCallOut.close(); } catch (e) {} }
+    if (peerData.audioCallIn) { try { peerData.audioCallIn.close(); } catch (e) {} }
+    if (peerData.conn && peerData.conn.open) { try { peerData.conn.close(); } catch (e) {} }
+
+    // Remove avatar & audio elements
+    removeRemoteAvatar(peerId);
+    stopRemoteAudio(peerId);
+
+    // Remove from map
+    state.peers.delete(peerId);
+
+    addSystemMessage('A user disconnected.');
+    updateConnectionStatus();
+
+    // Check if we lost the screen share source
+    let hasScreenShare = false;
+    state.peers.forEach((pd) => { if (pd.mediaCallIn) hasScreenShare = true; });
+    if (!hasScreenShare && !state.localStream) {
+        UI.workspace.video.srcObject = null;
+        UI.workspace.placeholder.classList.remove('hidden');
+        UI.workspace.video.classList.add('hidden');
     }
-    if (state.audioCall) {
-        state.audioCall.close();
-        state.audioCall = null;
-    }
-    UI.workspace.remoteAudio.srcObject = null;
-    state.isMicMuted = false;
-    UI.workspace.btnToggleMic.textContent = '🎤';
-    UI.workspace.btnToggleMic.classList.remove('mic-active', 'mic-muted');
-    UI.workspace.btnToggleMic.title = 'Toggle Microphone';
 }
 
-// --- UI Helpers ---
+function updateConnectionStatus() {
+    let connectedCount = 0;
+    state.peers.forEach(pd => { if (pd.conn && pd.conn.open) connectedCount++; });
+
+    if (connectedCount > 0) {
+        UI.workspace.indicator.classList.replace('offline', 'online');
+        UI.workspace.indicator.title = `Online (${connectedCount} peer${connectedCount > 1 ? 's' : ''})`;
+        UI.chat.input.disabled = false;
+        UI.chat.btnSend.disabled = false;
+    } else {
+        UI.workspace.indicator.classList.replace('online', 'offline');
+        UI.workspace.indicator.title = 'Offline';
+        UI.chat.input.disabled = true;
+        UI.chat.btnSend.disabled = true;
+    }
+}
+
+// ==========================================
+// UI Helpers
+// ==========================================
 
 function setStatus(msg) {
     UI.setup.status.textContent = msg;
@@ -703,6 +907,7 @@ function transitionToWorkspace() {
     UI.views.setup.classList.add('hidden');
     UI.views.workspace.classList.remove('hidden');
     UI.views.workspace.classList.add('active', 'fade-in');
+    UI.workspace.btnShare.classList.remove('hidden'); // Show share button for all users
 }
 
 function leaveRoom() {
@@ -711,56 +916,66 @@ function leaveRoom() {
         state.localStream.getTracks().forEach(track => track.stop());
         state.localStream = null;
     }
-    
-    // 2. Clean up media call
-    if (state.mediaCall) {
-        state.mediaCall.close();
-        state.mediaCall = null;
+
+    // 2. Clean up microphone
+    if (state.localAudioStream) {
+        state.localAudioStream.getTracks().forEach(track => track.stop());
+        state.localAudioStream = null;
     }
+    state.isMicMuted = false;
+    UI.workspace.btnToggleMic.textContent = '🎤';
+    UI.workspace.btnToggleMic.classList.remove('mic-active', 'mic-muted');
+    UI.workspace.btnToggleMic.title = 'Toggle Microphone';
 
-    // 2b. Clean up audio
-    cleanupAudio();
+    // 3. Clean up ALL peer connections
+    state.peers.forEach((peerData, peerId) => {
+        if (peerData.mediaCallOut) { try { peerData.mediaCallOut.close(); } catch (e) {} }
+        if (peerData.mediaCallIn) { try { peerData.mediaCallIn.close(); } catch (e) {} }
+        if (peerData.audioCallOut) { try { peerData.audioCallOut.close(); } catch (e) {} }
+        if (peerData.audioCallIn) { try { peerData.audioCallIn.close(); } catch (e) {} }
+        if (peerData.conn) { try { peerData.conn.close(); } catch (e) {} }
+        removeRemoteAvatar(peerId);
+        stopRemoteAudio(peerId);
+    });
+    state.peers.clear();
 
-    // 3. Clean up data connection
-    if (state.conn) {
-        state.conn.close();
-        state.conn = null;
-    }
-
-    // 4. Clean up PeerJS instance
+    // 4. Destroy PeerJS instance
     if (state.peer) {
         state.peer.destroy();
         state.peer = null;
     }
 
-    // 5. Reset UI Elements
+    // 5. Reset UI
     UI.chat.container.innerHTML = '';
     UI.workspace.video.srcObject = null;
+    UI.workspace.video.muted = false;
     UI.workspace.video.classList.add('hidden');
     UI.workspace.placeholder.classList.remove('hidden');
     UI.workspace.btnShare.classList.add('hidden');
+    UI.workspace.btnShare.textContent = 'Share Screen';
+    UI.workspace.btnShare.classList.remove('secondary-btn');
+    UI.workspace.btnShare.classList.add('primary-btn');
     UI.workspace.indicator.classList.replace('online', 'offline');
-    UI.workspace.indicator.title = "Offline";
+    UI.workspace.indicator.title = 'Offline';
     UI.chat.input.disabled = true;
     UI.chat.btnSend.disabled = true;
-    UI.avatars.remote.classList.add('hidden');
 
-    // 6. Transition to Setup View
+    // 6. Transition to Setup
     UI.views.workspace.classList.remove('active', 'fade-in');
     UI.views.workspace.classList.add('hidden');
     UI.views.setup.classList.remove('hidden');
     UI.views.setup.classList.add('active');
-    
+
     setStatus("You left the room.");
-    
-    // Reset state flags
     state.isHost = false;
-    state.remoteId = null;
+    state.hostId = null;
 }
 
 function copyInviteLink() {
+    // Always use host's ID for the invite link
+    const roomId = state.hostId || state.myId || UI.workspace.roomId.textContent;
     const url = new URL(window.location.href);
-    url.searchParams.set('room', state.myId || UI.workspace.roomId.textContent);
+    url.searchParams.set('room', roomId);
     navigator.clipboard.writeText(url.toString()).then(() => {
         const originalText = UI.workspace.btnCopy.textContent;
         UI.workspace.btnCopy.textContent = "✅";
@@ -768,31 +983,20 @@ function copyInviteLink() {
     });
 }
 
-function handleDisconnection() {
-    UI.workspace.indicator.classList.replace('online', 'offline');
-    UI.workspace.indicator.title = "Offline";
-    UI.chat.input.disabled = true;
-    UI.chat.btnSend.disabled = true;
-    addSystemMessage("Connection lost. Peer disconnected.");
-    UI.avatars.remote.classList.add('hidden');
-    
-    if (state.remoteStream) {
-        UI.workspace.video.srcObject = null;
-        UI.workspace.placeholder.classList.remove('hidden');
-        UI.workspace.video.classList.add('hidden');
-    }
-    
-    // Clean up audio on disconnect
-    if (state.audioCall) {
-        state.audioCall.close();
-        state.audioCall = null;
-    }
-    UI.workspace.remoteAudio.srcObject = null;
-
-    // CRITICAL: Reset connection state so Host can accept a new or rejoining guest
-    state.conn = null;
-    state.mediaCall = null;
-    state.remoteStream = null;
+function handlePeerErrors() {
+    state.peer.on('error', (err) => {
+        console.error(err);
+        if (err.type === 'peer-unavailable') {
+            setStatus("Connection failed: Room not found or host disconnected.");
+            addSystemMessage("Connection failed. Host might be disconnected or room ID is invalid.");
+        } else if (err.type === 'network') {
+            setStatus("Network error. Check your internet connection.");
+        } else if (err.type === 'server-error') {
+            setStatus("Signaling server error. Try again in a moment.");
+        } else {
+            setStatus("Error: " + err.message);
+        }
+    });
 }
 
 // Start app
