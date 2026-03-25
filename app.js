@@ -135,14 +135,6 @@ const UI = {
         overlay: document.getElementById('confirm-modal'),
         btnConfirm: document.getElementById('btn-modal-confirm'),
         btnCancel: document.getElementById('btn-modal-cancel')
-    },
-    toasts: document.getElementById('toast-container'),
-    errorPanel: {
-        overlay: document.getElementById('error-panel'),
-        message: document.getElementById('error-panel-message'),
-        code: document.getElementById('error-panel-code'),
-        btnClose: document.getElementById('btn-close-error'),
-        btnCopy: document.getElementById('btn-copy-error')
     }
 };
 
@@ -173,16 +165,6 @@ function bindEvents() {
     UI.modal.btnConfirm.addEventListener('click', () => {
         UI.modal.overlay.classList.add('hidden');
         leaveRoom();
-    });
-
-    // Error panel events
-    UI.errorPanel.btnClose.addEventListener('click', () => UI.errorPanel.overlay.classList.add('hidden'));
-    UI.errorPanel.btnCopy.addEventListener('click', () => {
-        const errorText = UI.errorPanel.code.textContent;
-        navigator.clipboard.writeText(errorText).then(() => {
-            UI.errorPanel.btnCopy.textContent = '✅ Copied!';
-            setTimeout(() => UI.errorPanel.btnCopy.textContent = '📋 Copy Error Details', 2000);
-        });
     });
 
     UI.workspace.btnToggleChat.addEventListener('click', () => UI.chat.sidebar.classList.toggle('hidden-sidebar'));
@@ -262,42 +244,6 @@ function checkForUrlRoom() {
         UI.setup.inputRoom.value = peerId;
         setStatus("Found room ID from URL. Click Join Room to connect.");
     }
-}
-
-// ==========================================
-// Toast Notification System
-// ==========================================
-
-function showToast(message, type = 'info', duration = 6000) {
-    const icons = { error: '❌', warning: '⚠️', info: 'ℹ️' };
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span>${message}</span>`;
-    UI.toasts.appendChild(toast);
-
-    setTimeout(() => {
-        toast.classList.add('toast-out');
-        setTimeout(() => toast.remove(), 300);
-    }, duration);
-}
-
-function showErrorPanel(title, details) {
-    const timestamp = new Date().toISOString();
-    const diagnostics = [
-        `Error: ${title}`,
-        `Time: ${timestamp}`,
-        `PeerID: ${state.myId || 'not assigned'}`,
-        `HostID: ${state.hostId || 'none'}`,
-        `IsHost: ${state.isHost}`,
-        `Connected Peers: ${state.peers.size}`,
-        `Browser: ${navigator.userAgent}`,
-        `---`,
-        `Details: ${details}`
-    ].join('\n');
-
-    UI.errorPanel.message.textContent = title;
-    UI.errorPanel.code.textContent = diagnostics;
-    UI.errorPanel.overlay.classList.remove('hidden');
 }
 
 // ==========================================
@@ -434,34 +380,14 @@ function setupDataConnection(conn, isIncoming) {
         conn.on('open', onOpen);
     }
 
-    // Connection timeout — if data channel doesn't open in 15s, show error
-    const connTimeout = setTimeout(() => {
-        if (!conn.open) {
-            const errMsg = `Connection to peer timed out after 15 seconds. The host may be offline or unreachable.`;
-            showToast(errMsg, 'error', 10000);
-            showErrorPanel(
-                'Connection Timed Out',
-                `Peer ID: ${peerId}\nThe data channel did not open within 15 seconds. This usually means:\n- The host/room no longer exists\n- Firewall is blocking the connection\n- NAT traversal failed (STUN/TURN could not find a path)`
-            );
-            removePeer(peerId);
-        }
-    }, 15000);
-
     conn.on('data', (data) => handleIncomingData(data, peerId));
 
     conn.on('close', () => {
-        clearTimeout(connTimeout);
         removePeer(peerId);
     });
 
     conn.on('error', (err) => {
-        clearTimeout(connTimeout);
         console.error(`Data connection error with ${peerId}:`, err);
-        showToast(`Connection error: ${err.message || err.type || 'Unknown'}`, 'error', 8000);
-        showErrorPanel(
-            'Peer Connection Error',
-            `Peer: ${peerId}\nError type: ${err.type || 'unknown'}\nMessage: ${err.message || 'No message'}\nThis may be caused by network issues or incompatible NAT types.`
-        );
         removePeer(peerId);
     });
 }
@@ -1077,46 +1003,27 @@ function copyInviteLink() {
 function handlePeerErrors() {
     state.peer.on('error', (err) => {
         console.error(err);
-        let userMsg = '';
-        let details = `Type: ${err.type}\nMessage: ${err.message}`;
-
         if (err.type === 'peer-unavailable') {
-            userMsg = 'Room not found — the host may have left or the Room ID is wrong.';
-            setStatus(userMsg);
+            setStatus("Connection failed: Room not found or host disconnected.");
+            addSystemMessage("Connection failed. Host might be disconnected or room ID is invalid.");
         } else if (err.type === 'network') {
-            userMsg = 'Network error — check your internet connection and try again.';
-            setStatus(userMsg);
+            setStatus("Network error. Check your internet connection.");
+            addSystemMessage("Network error. Check your internet connection.");
         } else if (err.type === 'server-error') {
-            userMsg = 'Signaling server is down — the PeerJS cloud server may be overloaded. Try again in a minute.';
-            setStatus(userMsg);
-        } else if (err.type === 'disconnected') {
-            userMsg = 'Disconnected from the signaling server. Your internet may have dropped.';
-            setStatus(userMsg);
-        } else if (err.type === 'socket-error') {
-            userMsg = 'WebSocket connection failed — the signaling server may be unreachable from your network.';
-            setStatus(userMsg);
-        } else if (err.type === 'socket-closed') {
-            userMsg = 'Connection to signaling server was closed unexpectedly.';
-            setStatus(userMsg);
+            setStatus("Signaling server error. Try again in a moment.");
+            addSystemMessage("Signaling server error. Try again in a moment.");
         } else {
-            userMsg = `Error: ${err.message}`;
-            setStatus(userMsg);
+            setStatus("Error: " + err.message);
+            addSystemMessage("Error: " + err.message);
         }
-
-        showToast(userMsg, 'error', 10000);
-        showErrorPanel(userMsg, details);
-        addSystemMessage(userMsg);
     });
 
-    // Monitor the PeerJS connection to the signaling server
     state.peer.on('disconnected', () => {
-        showToast('Lost connection to signaling server. Trying to reconnect...', 'warning', 8000);
         addSystemMessage('Disconnected from signaling server. Attempting reconnect...');
-        // Try to reconnect
         try {
             state.peer.reconnect();
         } catch (e) {
-            showToast('Reconnection failed. Please reload the page.', 'error', 10000);
+            addSystemMessage('Reconnection failed. Please reload the page.');
         }
     });
 }
