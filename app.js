@@ -10,10 +10,27 @@ const PEER_CONFIG = {
             { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun3.l.google.com:19302' },
             { urls: 'stun:stun4.l.google.com:19302' },
-            // Optional: Add TURN servers for better connectivity behind strict NATs
-            // Get free credentials at https://www.metered.ca/stun-turn
-            // { urls: 'turn:your-turn-server:443', username: 'user', credential: 'pass' },
-            // { urls: 'turn:your-turn-server:443?transport=tcp', username: 'user', credential: 'pass' },
+            // Free TURN relay servers (Metered.ca Open Relay) for NAT traversal
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turns:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
         ]
     },
     debug: 1
