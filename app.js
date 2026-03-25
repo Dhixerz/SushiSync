@@ -31,7 +31,8 @@ const PEER_CONFIG = {
                 username: 'openrelayproject',
                 credential: 'openrelayproject'
             },
-        ]
+        ],
+        iceTransportPolicy: 'relay'
     },
     debug: 1
 };
